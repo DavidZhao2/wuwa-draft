@@ -12,6 +12,7 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
 
 const START_COUNTDOWN_MS = 10_000;
 const COIN_FLIP_MS = 3_000;
+const COIN_RESULT_MS = 3_000;
 const TURN_TIME_MS = 90_000;
 const rooms = new Map();
 const characters = [
@@ -30,7 +31,9 @@ const bosses = [
   'Rustfire Chassis', 'Denia', 'Nameless Explorer', 'Sigilum', 'Hyvatia',
   'Reactor Husk', 'Dreamless', 'False Sovereign', 'Lioness of Glory',
   'Lady of the Sea', 'Fleurdelys', 'Kelpie', 'Lorelei', 'Dragon of Dirge',
-  'Hecate', 'Sentry Construct', 'Fallacy of No Return'
+  'Hecate', 'Sentry Construct', 'Fallacy of No Return', 'Inferno Rider',
+  'Crownless', 'Feilian Beringal', 'Mourning Aix', 'Impermanence Heron',
+  'Tempest Mephis'
 ];
 const bossSet = new Set(bosses);
 
@@ -50,7 +53,14 @@ const makeCode = () => crypto.randomBytes(3).toString('hex').toUpperCase();
 const safe = value => String(value || '').slice(0, 60);
 const cleanName = (value, fallback) => String(value || '').trim().replace(/\s+/g, ' ').slice(0, 16) || fallback;
 const cleanMessage = value => String(value || '').trim().replace(/\s+/g, ' ').slice(0, 280);
-const randomBosses = () => [...bosses].sort(() => Math.random() - 0.5).slice(0, 5);
+const randomBosses = (previous = []) => {
+  const previousKey = [...previous].sort().join('|');
+  let selection;
+  do {
+    selection = [...bosses].sort(() => Math.random() - 0.5).slice(0, 5);
+  } while ([...selection].sort().join('|') === previousKey);
+  return selection;
+};
 
 function publicState(room, viewerRole = 'spectator') {
   const step = room.steps[room.history.length];
@@ -73,6 +83,7 @@ function publicState(room, viewerRole = 'spectator') {
     ready: room.ready,
     countdownEndsAt: room.countdownEndsAt,
     coinFlipEndsAt: room.coinFlipEndsAt,
+    coinRevealAt: room.coinRevealAt,
     coinResult: room.coinResult,
     firstSide: room.firstSide,
     actionDeadline: room.actionDeadline,
@@ -176,14 +187,16 @@ function beginStartCountdown(room) {
     room.coinResult = Math.random() < 0.5 ? 'heads' : 'tails';
     room.firstSide = room.coinResult === 'heads' ? 'A' : 'B';
     room.steps = buildSteps(room.firstSide);
-    room.coinFlipEndsAt = Date.now() + COIN_FLIP_MS;
+    room.coinRevealAt = Date.now() + COIN_FLIP_MS;
+    room.coinFlipEndsAt = room.coinRevealAt + COIN_RESULT_MS;
     room.startTimeout = setTimeout(() => {
       room.startTimeout = null;
       room.coinFlipEndsAt = null;
+      room.coinRevealAt = null;
       if (!room.players.A || !room.players.B) return publish(room);
       room.ready = true;
       scheduleTurn(room);
-    }, COIN_FLIP_MS);
+    }, COIN_FLIP_MS + COIN_RESULT_MS);
     publish(room);
   }, START_COUNTDOWN_MS);
   publish(room);
@@ -194,6 +207,7 @@ function cancelStartCountdown(room) {
   room.startTimeout = null;
   room.countdownEndsAt = null;
   room.coinFlipEndsAt = null;
+  room.coinRevealAt = null;
 }
 
 io.on('connection', socket => {
@@ -221,6 +235,7 @@ io.on('connection', socket => {
       steps: buildSteps('A'),
       coinResult: null,
       coinFlipEndsAt: null,
+      coinRevealAt: null,
       ready: false,
       countdownEndsAt: null,
       actionDeadline: null,
@@ -331,7 +346,9 @@ io.on('connection', socket => {
     room.teamVisibility = { A: false, B: false };
     room.ready = false;
     room.coinResult = null;
+    room.coinRevealAt = null;
     room.actionDeadline = null;
+    if (room.bossMode === 'random') room.bosses = randomBosses(room.bosses);
     if (room.players.A && room.players.B) beginStartCountdown(room);
     else publish(room);
   });
