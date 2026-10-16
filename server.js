@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const crypto = require('crypto');
+const { sanitizeFeatures, settingsLocked, canConfigure } = require('./lib/room-features');
 
 const app = express();
 const server = http.createServer(app);
@@ -65,6 +66,7 @@ const randomBosses = (previous = []) => {
 function publicState(room, viewerRole = 'spectator') {
   const step = room.steps[room.history.length];
   const canViewTeam = side => viewerRole === 'spectator' || viewerRole === side || room.teamVisibility[side];
+  const canViewBossTeams = side => viewerRole === 'spectator' || viewerRole === side || room.teamVisibility[side] || !step;
   return {
     code: room.code,
     history: room.history,
@@ -74,6 +76,13 @@ function publicState(room, viewerRole = 'spectator') {
       B: canViewTeam('B') ? room.teams.B : room.teams.B.map(() => [])
     },
     teamVisibility: room.teamVisibility,
+    teamLocks: room.teamLocks || { A: room.teams.A.map(() => false), B: room.teams.B.map(() => false) },
+    bossTeams: {
+      A: canViewBossTeams('A') ? room.bossTeams?.A || {} : {},
+      B: canViewBossTeams('B') ? room.bossTeams?.B || {} : {}
+    },
+    intelligenceFeatures: sanitizeFeatures(room.intelligenceFeatures),
+    intelligenceSettingsLocked: settingsLocked(room),
     bosses: room.bosses,
     bossMode: room.bossMode,
     phase: step?.phase || 'complete',
@@ -138,6 +147,9 @@ function addAction(room, step, character, automatic = false) {
   });
   if (step.type === 'team-ban') {
     room.teams[step.targetSide] = room.teams[step.targetSide].map(team => team.filter(name => name !== character));
+    for (const [boss, selection] of Object.entries(room.bossTeams?.[step.targetSide] || {})) {
+      if (selection.team?.includes(character)) delete room.bossTeams[step.targetSide][boss];
+    }
   }
 }
 
@@ -230,7 +242,10 @@ io.on('connection', socket => {
       bossMode,
       bosses: bossMode === 'random' ? randomBosses() : bossMode === 'custom' ? chosenBosses : [],
       teams: { A: [[], [], []], B: [[], [], []] },
+      teamLocks: { A: [false, false, false], B: [false, false, false] },
+      bossTeams: { A: {}, B: {} },
       teamVisibility: { A: false, B: false },
+      intelligenceFeatures: sanitizeFeatures(payload.intelligenceFeatures),
       firstSide: 'A',
       steps: buildSteps('A'),
       coinResult: null,
@@ -284,12 +299,19 @@ io.on('connection', socket => {
     publish(room);
   });
 
+  socket.on('updateIntelligenceFeatures', value => {
+    const room = rooms.get(socket.data.room);
+    if (!room || !canConfigure(socket.data.role, room)) return;
+    room.intelligenceFeatures = sanitizeFeatures(value);
+    publish(room);
+  });
+
   socket.on('assign', ({ character: raw, team: rawTeam } = {}) => {
     const room = rooms.get(socket.data.room);
     const side = socket.data.role;
     const character = safe(raw);
     const team = Number(rawTeam);
-    if (!room || !['A', 'B'].includes(side) || !Number.isInteger(team) || team < 0 || team >= room.teams[side].length) return;
+    if (!room || !['A', 'B'].includes(side) || !Number.isInteger(team) || team < 0 || team >= room.teams[side].length || room.teamLocks?.[side]?.[team]) return;
     const isOwned = room.history.some(item => item.type === 'pick' && item.side === side && item.character === character);
     const isBanned = room.history.some(item => item.type === 'team-ban' && item.targetSide === side && item.character === character);
     if (!isOwned || isBanned) return;
@@ -303,7 +325,7 @@ io.on('connection', socket => {
     const side = socket.data.role;
     const character = safe(raw);
     const team = Number(rawTeam);
-    if (!room || !['A', 'B'].includes(side) || !Number.isInteger(team) || team < 0 || team >= room.teams[side].length) return;
+    if (!room || !['A', 'B'].includes(side) || !Number.isInteger(team) || team < 0 || team >= room.teams[side].length || room.teamLocks?.[side]?.[team]) return;
     room.teams[side][team] = room.teams[side][team].filter(name => name !== character);
     publish(room);
   });
@@ -313,6 +335,7 @@ io.on('connection', socket => {
     const side = socket.data.role;
     if (!room || !['A', 'B'].includes(side) || room.teams[side].length >= 10) return;
     room.teams[side].push([]);
+    room.teamLocks[side].push(false);
     publish(room);
   });
 
@@ -323,6 +346,54 @@ io.on('connection', socket => {
     const lastTeam = room.teams[side][room.teams[side].length - 1];
     if (lastTeam.length) return;
     room.teams[side].pop();
+    room.teamLocks[side].pop();
+    publish(room);
+  });
+
+  socket.on('toggleTeamLock', ({ team: rawTeam } = {}) => {
+    const room = rooms.get(socket.data.room);
+    const side = socket.data.role;
+    const team = Number(rawTeam);
+    if (!room || !['A', 'B'].includes(side) || !room.intelligenceFeatures?.autoBuild || !Number.isInteger(team) || team < 0 || team >= room.teams[side].length) return;
+    room.teamLocks[side][team] = !room.teamLocks[side][team];
+    publish(room);
+  });
+
+  socket.on('replaceTeams', ({ teams: rawTeams } = {}) => {
+    const room = rooms.get(socket.data.room);
+    const side = socket.data.role;
+    if (!room || !['A', 'B'].includes(side) || !room.intelligenceFeatures?.autoBuild || !Array.isArray(rawTeams)) return;
+    const owned = new Set(room.history.filter(item => item.type === 'pick' && item.side === side).map(item => item.character));
+    const banned = new Set(room.history.filter(item => item.type === 'team-ban' && item.targetSide === side).map(item => item.character));
+    const next = room.teams[side].map((team, index) => room.teamLocks[side][index] ? team : []);
+    rawTeams.slice(0, 10).forEach((value, index) => {
+      if (room.teamLocks[side][index] || !Array.isArray(value)) return;
+      const team = [...new Set(value.map(safe))];
+      if (team.length === 3 && team.every(character => owned.has(character) && !banned.has(character))) next[index] = team;
+    });
+    room.teams[side] = next;
+    publish(room);
+  });
+
+  socket.on('setBossTeam', ({ boss: rawBoss, team: rawTeam, locked = true } = {}) => {
+    const room = rooms.get(socket.data.room);
+    const side = socket.data.role;
+    const boss = safe(rawBoss);
+    if (!room || !['A', 'B'].includes(side) || !room.intelligenceFeatures?.winProbability || !room.bosses.includes(boss) || !Array.isArray(rawTeam)) return;
+    const team = [...new Set(rawTeam.map(safe))];
+    const owned = new Set(room.history.filter(item => item.type === 'pick' && item.side === side).map(item => item.character));
+    const banned = new Set(room.history.filter(item => item.type === 'team-ban' && item.targetSide === side).map(item => item.character));
+    if (team.length !== 3 || !team.every(character => owned.has(character) && !banned.has(character))) return;
+    room.bossTeams[side][boss] = { team, locked: Boolean(locked), mode: 'manual' };
+    publish(room);
+  });
+
+  socket.on('clearBossTeam', ({ boss: rawBoss } = {}) => {
+    const room = rooms.get(socket.data.room);
+    const side = socket.data.role;
+    const boss = safe(rawBoss);
+    if (!room || !['A', 'B'].includes(side) || !room.intelligenceFeatures?.winProbability) return;
+    delete room.bossTeams[side][boss];
     publish(room);
   });
 
@@ -343,6 +414,8 @@ io.on('connection', socket => {
     cancelStartCountdown(room);
     room.history = [];
     room.teams = { A: [[], [], []], B: [[], [], []] };
+    room.teamLocks = { A: [false, false, false], B: [false, false, false] };
+    room.bossTeams = { A: {}, B: {} };
     room.teamVisibility = { A: false, B: false };
     room.ready = false;
     room.coinResult = null;

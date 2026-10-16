@@ -1,1 +1,1 @@
-{"name":"wuwa-draft-arena","version":"1.0.0","private":true,"scripts":{"start":"node server.js"},"dependencies":{"express":"^4.21.2","socket.io":"^4.8.1"}}
+{"name":"wuwa-draft-arena","version":"1.0.0","private":true,"scripts":{"start":"node server.js","test":"node --test","check":"node --check server.js && node --check public/intelligence.js && node --check public/team-database.js && node scripts/check-inline.mjs"},"dependencies":{"express":"^4.21.2","socket.io":"^4.8.1"}}
