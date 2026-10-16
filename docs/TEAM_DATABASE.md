@@ -25,4 +25,4 @@ The exact best-of-five calculator is implemented, but percentages remain hidden 
 
 ## Current scope
 
-The initial dataset contains only manually reviewed compositions from the WuWa Wiki Team Builder. The other requested reference sites are listed for future review, but are not treated as evidence for records that were not directly verified. Boss compatibility is currently empty, so boss rankings and match percentages intentionally report insufficient data.
+The database contains manually curated Version 3.7 compositions and slot-specific substitutes from the WuWa Wiki Team Builder. Records that depend on an elemental Rover variant are omitted because the draft currently stores every Rover form under one ambiguous `Rover` ID. The other requested reference sites remain listed for future cross-review, but are not treated as evidence for records that were not directly verified. Boss compatibility is currently empty, so boss rankings and match percentages intentionally report insufficient data.
