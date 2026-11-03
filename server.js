@@ -44,7 +44,7 @@ const bossSet = new Set(bosses);
 
 function buildSteps(firstSide = 'A', draftFormat = 'regular') {
   const otherSide = firstSide === 'A' ? 'B' : 'A';
-  const pickPattern = [otherSide, firstSide, firstSide, otherSide, otherSide, firstSide];
+  const pickPattern = ['B', 'A', 'A', 'B', 'B', 'A'];
   const picksPerPlayer = DRAFT_FORMATS[draftFormat].picksPerPlayer;
   return [
     ...[firstSide, otherSide, otherSide, firstSide, firstSide, otherSide]
