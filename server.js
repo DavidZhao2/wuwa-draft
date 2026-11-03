@@ -13,7 +13,12 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
 const START_COUNTDOWN_MS = 10_000;
 const COIN_FLIP_MS = 3_000;
 const COIN_RESULT_MS = 3_000;
-const TURN_TIME_MS = 90_000;
+const TURN_TIME_MS = 30_000;
+const DRAFT_FORMATS = {
+  regular: { label: 'Regular Draft', picksPerPlayer: 9, finalBansPerPlayer: 2 },
+  semifinal: { label: 'Semi Final Draft', picksPerPlayer: 9, finalBansPerPlayer: 0 },
+  'grand-final': { label: 'Grand Final Draft', picksPerPlayer: 6, finalBansPerPlayer: 0 }
+};
 const rooms = new Map();
 const characters = [
   'Aalto', 'Aemeath', 'Augusta', 'Baizhi', 'Brant', 'Buling', 'Calcharo',
@@ -37,16 +42,31 @@ const bosses = [
 ];
 const bossSet = new Set(bosses);
 
-function buildSteps(firstSide = 'A') {
+function buildSteps(firstSide = 'A', draftFormat = 'regular') {
   const otherSide = firstSide === 'A' ? 'B' : 'A';
+  const pickPattern = [otherSide, firstSide, firstSide, otherSide, otherSide, firstSide];
+  const picksPerPlayer = DRAFT_FORMATS[draftFormat].picksPerPlayer;
   return [
-  ...[firstSide, otherSide, otherSide, firstSide, firstSide, otherSide].map(side => ({ phase: 'initial-ban', type: 'initial-ban', side })),
-  ...[otherSide, firstSide, firstSide, otherSide, otherSide, firstSide, firstSide, otherSide, otherSide, firstSide, firstSide, otherSide, otherSide, firstSide, firstSide, otherSide, otherSide, firstSide]
-    .map(side => ({ phase: 'pick', type: 'pick', side })),
-  ...[firstSide, otherSide, firstSide, otherSide].map(side => ({
-    phase: 'team-ban', type: 'team-ban', side, targetSide: side === 'A' ? 'B' : 'A'
-  }))
+    ...[firstSide, otherSide, otherSide, firstSide, firstSide, otherSide]
+      .map(side => ({ phase: 'initial-ban', type: 'initial-ban', side })),
+    ...Array.from({ length: picksPerPlayer * 2 }, (_, index) => ({
+      phase: 'pick', type: 'pick', side: pickPattern[index % pickPattern.length]
+    }))
   ];
+}
+
+function finalBanCount(room, side) {
+  return room.history.filter(item => item.type === 'team-ban' && item.side === side).length;
+}
+
+function currentStep(room) {
+  const sequentialStep = room.steps[room.history.length];
+  if (sequentialStep) return sequentialStep;
+  const finalBansPerPlayer = DRAFT_FORMATS[room.draftFormat].finalBansPerPlayer;
+  if (finalBansPerPlayer && ['A', 'B'].some(side => finalBanCount(room, side) < finalBansPerPlayer)) {
+    return { phase: 'team-ban', type: 'team-ban', simultaneous: true };
+  }
+  return null;
 }
 
 const makeCode = () => crypto.randomBytes(3).toString('hex').toUpperCase();
@@ -63,7 +83,8 @@ const randomBosses = (previous = []) => {
 };
 
 function publicState(room, viewerRole = 'spectator') {
-  const step = room.steps[room.history.length];
+  const step = currentStep(room);
+  const format = DRAFT_FORMATS[room.draftFormat];
   const canViewTeam = side => viewerRole === 'spectator' || viewerRole === side || room.teamVisibility[side];
   return {
     code: room.code,
@@ -76,9 +97,17 @@ function publicState(room, viewerRole = 'spectator') {
     teamVisibility: room.teamVisibility,
     bosses: room.bosses,
     bossMode: room.bossMode,
+    draftFormat: room.draftFormat,
+    formatLabel: format.label,
+    picksPerPlayer: format.picksPerPlayer,
+    finalBansPerPlayer: format.finalBansPerPlayer,
+    banProgress: { A: finalBanCount(room, 'A'), B: finalBanCount(room, 'B') },
     phase: step?.phase || 'complete',
     turn: step?.side || null,
-    targetSide: step?.targetSide || null,
+    targetSide: step?.targetSide || (step?.phase === 'team-ban' && ['A', 'B'].includes(viewerRole)
+      ? (viewerRole === 'A' ? 'B' : 'A')
+      : null),
+    simultaneous: Boolean(step?.simultaneous),
     names: room.names,
     ready: room.ready,
     countdownEndsAt: room.countdownEndsAt,
@@ -111,33 +140,36 @@ function joinSocket(socket, room, role) {
   publish(room);
 }
 
-function legalCharacters(room, step) {
+function legalCharacters(room, step, actingSide = step?.side) {
   if (!step) return [];
   if (step.phase === 'initial-ban' || step.phase === 'pick') {
     const used = new Set(room.history.map(item => item.character));
     return characters.filter(character => !used.has(character));
   }
+  if (!['A', 'B'].includes(actingSide)) return [];
+  const targetSide = actingSide === 'A' ? 'B' : 'A';
   const alreadyBanned = new Set(room.history.filter(item => item.type === 'team-ban').map(item => item.character));
   return room.history
-    .filter(item => item.type === 'pick' && item.side === step.targetSide && !alreadyBanned.has(item.character))
+    .filter(item => item.type === 'pick' && item.side === targetSide && !alreadyBanned.has(item.character))
     .map(item => item.character);
 }
 
-function isLegalAction(room, step, character) {
-  return characterSet.has(character) && legalCharacters(room, step).includes(character);
+function isLegalAction(room, step, character, actingSide = step?.side) {
+  return characterSet.has(character) && legalCharacters(room, step, actingSide).includes(character);
 }
 
-function addAction(room, step, character, automatic = false) {
+function addAction(room, step, character, automatic = false, actingSide = step.side) {
+  const targetSide = step.type === 'team-ban' ? (actingSide === 'A' ? 'B' : 'A') : null;
   room.history.push({
-    side: step.side,
+    side: actingSide,
     type: step.type,
     phase: step.phase,
-    targetSide: step.targetSide || null,
+    targetSide,
     character,
     automatic
   });
   if (step.type === 'team-ban') {
-    room.teams[step.targetSide] = room.teams[step.targetSide].map(team => team.filter(name => name !== character));
+    room.teams[targetSide] = room.teams[targetSide].map(team => team.filter(name => name !== character));
   }
 }
 
@@ -157,7 +189,7 @@ function leaveRoom(socket) {
 
 function scheduleTurn(room) {
   clearTimeout(room.actionTimeout);
-  const step = room.steps[room.history.length];
+  const step = currentStep(room);
   if (!step) {
     room.actionDeadline = null;
     room.actionTimeout = null;
@@ -166,11 +198,21 @@ function scheduleTurn(room) {
   }
   room.actionDeadline = Date.now() + TURN_TIME_MS;
   room.actionTimeout = setTimeout(() => {
-    const currentStep = room.steps[room.history.length];
-    const legal = legalCharacters(room, currentStep);
-    if (currentStep && legal.length) {
-      const character = legal[Math.floor(Math.random() * legal.length)];
-      addAction(room, currentStep, character, true);
+    const activeStep = currentStep(room);
+    if (activeStep?.phase === 'team-ban') {
+      const required = DRAFT_FORMATS[room.draftFormat].finalBansPerPlayer;
+      for (const side of ['A', 'B']) {
+        while (finalBanCount(room, side) < required) {
+          const legal = legalCharacters(room, activeStep, side);
+          if (!legal.length) break;
+          addAction(room, activeStep, legal[Math.floor(Math.random() * legal.length)], true, side);
+        }
+      }
+    } else {
+      const legal = legalCharacters(room, activeStep);
+      if (activeStep && legal.length) {
+        addAction(room, activeStep, legal[Math.floor(Math.random() * legal.length)], true);
+      }
     }
     scheduleTurn(room);
   }, TURN_TIME_MS);
@@ -186,7 +228,7 @@ function beginStartCountdown(room) {
     if (!room.players.A || !room.players.B) return publish(room);
     room.coinResult = Math.random() < 0.5 ? 'heads' : 'tails';
     room.firstSide = room.coinResult === 'heads' ? 'A' : 'B';
-    room.steps = buildSteps(room.firstSide);
+    room.steps = buildSteps(room.firstSide, room.draftFormat);
     room.coinRevealAt = Date.now() + COIN_FLIP_MS;
     room.coinFlipEndsAt = room.coinRevealAt + COIN_RESULT_MS;
     room.startTimeout = setTimeout(() => {
@@ -212,6 +254,7 @@ function cancelStartCountdown(room) {
 
 io.on('connection', socket => {
   socket.on('create', (payload = {}) => {
+    const draftFormat = DRAFT_FORMATS[payload.draftFormat] ? payload.draftFormat : 'regular';
     const bossMode = ['random', 'custom', 'none'].includes(payload.bossMode) ? payload.bossMode : 'none';
     const chosenBosses = [...new Set(Array.isArray(payload.bosses) ? payload.bosses.map(safe) : [])]
       .filter(boss => bossSet.has(boss));
@@ -227,12 +270,13 @@ io.on('connection', socket => {
       names: { A: cleanName(payload.name, 'Player A'), B: 'Player B' },
       history: [],
       messages: [],
+      draftFormat,
       bossMode,
       bosses: bossMode === 'random' ? randomBosses() : bossMode === 'custom' ? chosenBosses : [],
       teams: { A: [[], [], []], B: [[], [], []] },
       teamVisibility: { A: false, B: false },
       firstSide: 'A',
-      steps: buildSteps('A'),
+      steps: buildSteps('A', draftFormat),
       coinResult: null,
       coinFlipEndsAt: null,
       coinRevealAt: null,
@@ -263,10 +307,23 @@ io.on('connection', socket => {
 
   socket.on('action', ({ character: raw } = {}) => {
     const room = rooms.get(socket.data.room);
-    const step = room && room.steps[room.history.length];
+    const step = room && currentStep(room);
+    const side = socket.data.role;
     const character = safe(raw);
-    if (!room || !room.ready || !step || socket.data.role !== step.side) return;
-    if (!isLegalAction(room, step, character)) return;
+    if (!room || !room.ready || !step || !['A', 'B'].includes(side)) return;
+    if (step.phase === 'team-ban') {
+      const required = DRAFT_FORMATS[room.draftFormat].finalBansPerPlayer;
+      if (finalBanCount(room, side) >= required || !isLegalAction(room, step, character, side)) return;
+      addAction(room, step, character, false, side);
+      if (!currentStep(room)) {
+        clearTimeout(room.actionTimeout);
+        room.actionDeadline = null;
+        room.actionTimeout = null;
+      }
+      publish(room);
+      return;
+    }
+    if (side !== step.side || !isLegalAction(room, step, character)) return;
     clearTimeout(room.actionTimeout);
     addAction(room, step, character);
     scheduleTurn(room);
