@@ -15,9 +15,9 @@ const COIN_FLIP_MS = 3_000;
 const COIN_RESULT_MS = 3_000;
 const TURN_TIME_MS = 30_000;
 const DRAFT_FORMATS = {
-  regular: { label: 'Regular Draft', picksPerPlayer: 9, finalBansPerPlayer: 2 },
-  semifinal: { label: 'Semi Final Draft', picksPerPlayer: 9, finalBansPerPlayer: 0 },
-  'grand-final': { label: 'Grand Final Draft', picksPerPlayer: 6, finalBansPerPlayer: 0 }
+  regular: { label: 'Regular Draft', picksPerPlayer: 9, finalBansPerPlayer: 2, bossCount: 5 },
+  semifinal: { label: 'Semi Final Draft', picksPerPlayer: 9, finalBansPerPlayer: 0, bossCount: 5 },
+  'grand-final': { label: 'Grand Final Draft', picksPerPlayer: 6, finalBansPerPlayer: 0, bossCount: 2 }
 };
 const rooms = new Map();
 const characters = [
@@ -73,11 +73,11 @@ const makeCode = () => crypto.randomBytes(3).toString('hex').toUpperCase();
 const safe = value => String(value || '').slice(0, 60);
 const cleanName = (value, fallback) => String(value || '').trim().replace(/\s+/g, ' ').slice(0, 16) || fallback;
 const cleanMessage = value => String(value || '').trim().replace(/\s+/g, ' ').slice(0, 280);
-const randomBosses = (previous = []) => {
+const randomBosses = (previous = [], count = 5) => {
   const previousKey = [...previous].sort().join('|');
   let selection;
   do {
-    selection = [...bosses].sort(() => Math.random() - 0.5).slice(0, 5);
+    selection = [...bosses].sort(() => Math.random() - 0.5).slice(0, count);
   } while ([...selection].sort().join('|') === previousKey);
   return selection;
 };
@@ -97,6 +97,7 @@ function publicState(room, viewerRole = 'spectator') {
     teamVisibility: room.teamVisibility,
     bosses: room.bosses,
     bossMode: room.bossMode,
+    bossCount: format.bossCount,
     draftFormat: room.draftFormat,
     formatLabel: format.label,
     picksPerPlayer: format.picksPerPlayer,
@@ -255,11 +256,12 @@ function cancelStartCountdown(room) {
 io.on('connection', socket => {
   socket.on('create', (payload = {}) => {
     const draftFormat = DRAFT_FORMATS[payload.draftFormat] ? payload.draftFormat : 'regular';
+    const bossCount = DRAFT_FORMATS[draftFormat].bossCount;
     const bossMode = ['random', 'custom', 'none'].includes(payload.bossMode) ? payload.bossMode : 'none';
     const chosenBosses = [...new Set(Array.isArray(payload.bosses) ? payload.bosses.map(safe) : [])]
       .filter(boss => bossSet.has(boss));
-    if (bossMode === 'custom' && chosenBosses.length !== 5) {
-      return socket.emit('errorMessage', 'Choose exactly five bosses');
+    if (bossMode === 'custom' && chosenBosses.length !== bossCount) {
+      return socket.emit('errorMessage', `Choose exactly ${bossCount} bosses`);
     }
     let id = makeCode();
     while (rooms.has(id)) id = makeCode();
@@ -272,7 +274,7 @@ io.on('connection', socket => {
       messages: [],
       draftFormat,
       bossMode,
-      bosses: bossMode === 'random' ? randomBosses() : bossMode === 'custom' ? chosenBosses : [],
+      bosses: bossMode === 'random' ? randomBosses([], bossCount) : bossMode === 'custom' ? chosenBosses : [],
       teams: { A: [[], [], []], B: [[], [], []] },
       teamVisibility: { A: false, B: false },
       firstSide: 'A',
@@ -405,7 +407,9 @@ io.on('connection', socket => {
     room.coinResult = null;
     room.coinRevealAt = null;
     room.actionDeadline = null;
-    if (room.bossMode === 'random') room.bosses = randomBosses(room.bosses);
+    if (room.bossMode === 'random') {
+      room.bosses = randomBosses(room.bosses, DRAFT_FORMATS[room.draftFormat].bossCount);
+    }
     if (room.players.A && room.players.B) beginStartCountdown(room);
     else publish(room);
   });
