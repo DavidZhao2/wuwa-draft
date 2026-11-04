@@ -44,13 +44,14 @@ const bossSet = new Set(bosses);
 
 function buildSteps(firstSide = 'A', draftFormat = 'regular') {
   const otherSide = firstSide === 'A' ? 'B' : 'A';
-  const pickPattern = ['B', 'A', 'A', 'B', 'B', 'A'];
   const picksPerPlayer = DRAFT_FORMATS[draftFormat].picksPerPlayer;
   return [
     ...[firstSide, otherSide, otherSide, firstSide, firstSide, otherSide]
       .map(side => ({ phase: 'initial-ban', type: 'initial-ban', side })),
     ...Array.from({ length: picksPerPlayer * 2 }, (_, index) => ({
-      phase: 'pick', type: 'pick', side: pickPattern[index % pickPattern.length]
+      phase: 'pick',
+      type: 'pick',
+      side: index === 0 ? 'B' : Math.floor((index - 1) / 2) % 2 === 0 ? 'A' : 'B'
     }))
   ];
 }
