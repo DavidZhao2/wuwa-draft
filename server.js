@@ -45,13 +45,17 @@ const bossSet = new Set(bosses);
 function buildSteps(firstSide = 'A', draftFormat = 'regular') {
   const otherSide = firstSide === 'A' ? 'B' : 'A';
   const picksPerPlayer = DRAFT_FORMATS[draftFormat].picksPerPlayer;
+  const pickFirstSide = draftFormat === 'grand-final' ? otherSide : 'B';
+  const pickOtherSide = pickFirstSide === 'A' ? 'B' : 'A';
   return [
     ...[firstSide, otherSide, otherSide, firstSide, firstSide, otherSide]
       .map(side => ({ phase: 'initial-ban', type: 'initial-ban', side })),
     ...Array.from({ length: picksPerPlayer * 2 }, (_, index) => ({
       phase: 'pick',
       type: 'pick',
-      side: index === 0 ? 'B' : Math.floor((index - 1) / 2) % 2 === 0 ? 'A' : 'B'
+      side: index === 0
+        ? pickFirstSide
+        : Math.floor((index - 1) / 2) % 2 === 0 ? pickOtherSide : pickFirstSide
     }))
   ];
 }
@@ -102,6 +106,9 @@ function publicState(room, viewerRole = 'spectator') {
     draftFormat: room.draftFormat,
     formatLabel: format.label,
     picksPerPlayer: format.picksPerPlayer,
+    pickFirstSide: room.draftFormat === 'grand-final'
+      ? (room.firstSide === 'A' ? 'B' : 'A')
+      : 'B',
     finalBansPerPlayer: format.finalBansPerPlayer,
     banProgress: { A: finalBanCount(room, 'A'), B: finalBanCount(room, 'B') },
     phase: step?.phase || 'complete',
