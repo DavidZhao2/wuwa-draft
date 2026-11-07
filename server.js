@@ -45,7 +45,9 @@ const bossSet = new Set(bosses);
 function buildSteps(firstSide = 'A', draftFormat = 'regular') {
   const otherSide = firstSide === 'A' ? 'B' : 'A';
   const picksPerPlayer = DRAFT_FORMATS[draftFormat].picksPerPlayer;
-  const pickFirstSide = draftFormat === 'grand-final' ? otherSide : 'B';
+  // Grand Final rewards the last opening banner with first pick. In the
+  // other formats, first pick goes to the opposite side.
+  const pickFirstSide = draftFormat === 'grand-final' ? otherSide : firstSide;
   const pickOtherSide = pickFirstSide === 'A' ? 'B' : 'A';
   return [
     ...[firstSide, otherSide, otherSide, firstSide, firstSide, otherSide]
@@ -108,7 +110,8 @@ function publicState(room, viewerRole = 'spectator') {
     picksPerPlayer: format.picksPerPlayer,
     pickFirstSide: room.draftFormat === 'grand-final'
       ? (room.firstSide === 'A' ? 'B' : 'A')
-      : 'B',
+      : room.firstSide,
+    canRerollBosses: viewerRole === 'A' && room.history.length === 0,
     finalBansPerPlayer: format.finalBansPerPlayer,
     banProgress: { A: finalBanCount(room, 'A'), B: finalBanCount(room, 'B') },
     phase: step?.phase || 'complete',
@@ -401,23 +404,38 @@ io.on('connection', socket => {
     publish(room);
   });
 
+  socket.on('rerollBoss', ({ index: rawIndex } = {}) => {
+    const room = rooms.get(socket.data.room);
+    const index = Number(rawIndex);
+    if (!room || socket.data.role !== 'A' || room.history.length > 0) return;
+    if (!Number.isInteger(index) || index < 0 || index >= room.bosses.length) return;
+    const available = bosses.filter(boss => !room.bosses.includes(boss));
+    if (!available.length) return;
+    room.bosses[index] = available[Math.floor(Math.random() * available.length)];
+    publish(room);
+  });
+
   socket.on('leaveRoom', () => leaveRoom(socket));
 
   socket.on('reset', () => {
     const room = rooms.get(socket.data.room);
     if (!room || socket.data.role !== 'A') return;
     clearTimeout(room.actionTimeout);
+    room.actionTimeout = null;
     cancelStartCountdown(room);
     room.history = [];
     room.teams = { A: [[], [], []], B: [[], [], []] };
     room.teamVisibility = { A: false, B: false };
     room.ready = false;
+    room.firstSide = 'A';
+    room.steps = buildSteps('A', room.draftFormat);
     room.coinResult = null;
     room.coinRevealAt = null;
     room.actionDeadline = null;
     if (room.bossMode === 'random') {
       room.bosses = randomBosses(room.bosses, DRAFT_FORMATS[room.draftFormat].bossCount);
     }
+    socket.emit('resetComplete');
     if (room.players.A && room.players.B) beginStartCountdown(room);
     else publish(room);
   });
