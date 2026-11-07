@@ -45,9 +45,8 @@ const bossSet = new Set(bosses);
 function buildSteps(firstSide = 'A', draftFormat = 'regular') {
   const otherSide = firstSide === 'A' ? 'B' : 'A';
   const picksPerPlayer = DRAFT_FORMATS[draftFormat].picksPerPlayer;
-  // Grand Final rewards the last opening banner with first pick. In the
-  // other formats, first pick goes to the opposite side.
-  const pickFirstSide = draftFormat === 'grand-final' ? otherSide : firstSide;
+  // The side that makes the sixth and final opening ban also gets pick #1.
+  const pickFirstSide = otherSide;
   const pickOtherSide = pickFirstSide === 'A' ? 'B' : 'A';
   return [
     ...[firstSide, otherSide, otherSide, firstSide, firstSide, otherSide]
@@ -108,9 +107,7 @@ function publicState(room, viewerRole = 'spectator') {
     draftFormat: room.draftFormat,
     formatLabel: format.label,
     picksPerPlayer: format.picksPerPlayer,
-    pickFirstSide: room.draftFormat === 'grand-final'
-      ? (room.firstSide === 'A' ? 'B' : 'A')
-      : room.firstSide,
+    pickFirstSide: room.firstSide === 'A' ? 'B' : 'A',
     canRerollBosses: viewerRole === 'A' && room.history.length === 0,
     finalBansPerPlayer: format.finalBansPerPlayer,
     banProgress: { A: finalBanCount(room, 'A'), B: finalBanCount(room, 'B') },
