@@ -108,7 +108,7 @@ function publicState(room, viewerRole = 'spectator') {
     formatLabel: format.label,
     picksPerPlayer: format.picksPerPlayer,
     pickFirstSide: room.firstSide === 'A' ? 'B' : 'A',
-    canRerollBosses: viewerRole === 'A' && room.history.length === 0,
+    canRerollBosses: viewerRole === 'A',
     finalBansPerPlayer: format.finalBansPerPlayer,
     banProgress: { A: finalBanCount(room, 'A'), B: finalBanCount(room, 'B') },
     phase: step?.phase || 'complete',
@@ -404,7 +404,7 @@ io.on('connection', socket => {
   socket.on('rerollBoss', ({ index: rawIndex } = {}) => {
     const room = rooms.get(socket.data.room);
     const index = Number(rawIndex);
-    if (!room || socket.data.role !== 'A' || room.history.length > 0) return;
+    if (!room || socket.data.role !== 'A') return;
     if (!Number.isInteger(index) || index < 0 || index >= room.bosses.length) return;
     const available = bosses.filter(boss => !room.bosses.includes(boss));
     if (!available.length) return;
